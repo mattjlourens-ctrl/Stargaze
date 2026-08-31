@@ -1,0 +1,164 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>StarGaze</title>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      max-width: 600px;
+      margin: 60px auto;
+      padding: 0 20px;
+      background: #f5f5f5;
+      color: #222;
+    }
+
+    h1 { font-size: 2rem; margin-bottom: 4px; }
+    p.subtitle { color: #666; margin-bottom: 28px; }
+
+    .search-row {
+      display: flex;
+      gap: 8px;
+      margin-bottom: 32px;
+    }
+
+    input[type="text"] {
+      flex: 1;
+      padding: 10px 14px;
+      font-size: 1rem;
+      border: 1px solid #ccc;
+      border-radius: 4px;
+    }
+
+    button {
+      padding: 10px 20px;
+      font-size: 1rem;
+      background: #333;
+      color: #fff;
+      border: none;
+      border-radius: 4px;
+      cursor: pointer;
+    }
+
+    button:disabled { background: #999; cursor: not-allowed; }
+
+    #results { display: none; }
+
+    .location-title {
+      font-size: 1.3rem;
+      font-weight: bold;
+      margin-bottom: 4px;
+    }
+
+    .spot-name { font-size: 1rem; margin-bottom: 2px; }
+    .spot-coords { color: #666; font-size: 0.85rem; margin-bottom: 8px; }
+    .timestamp { color: #666; font-size: 0.9rem; margin-bottom: 20px; }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      background: #fff;
+      border-radius: 6px;
+      overflow: hidden;
+      box-shadow: 0 1px 4px rgba(0,0,0,0.1);
+    }
+
+    th, td {
+      padding: 12px 16px;
+      text-align: left;
+      border-bottom: 1px solid #eee;
+    }
+
+    th { background: #f0f0f0; font-size: 0.85rem; color: #555; }
+    tr:last-child td { border-bottom: none; }
+
+    .good  { color: #166534; font-weight: bold; }
+    .ok    { color: #92400e; font-weight: bold; }
+    .bad   { color: #991b1b; font-weight: bold; }
+
+    #message { color: #666; font-style: italic; }
+
+    .map-frame {
+      width: 100%;
+      aspect-ratio: 16 / 9;
+      border: 0;
+      border-radius: 6px;
+      margin: 16px 0 10px;
+      box-shadow: 0 1px 4px rgba(0,0,0,0.1);
+    }
+
+    .earth-link {
+      display: inline-block;
+      margin-bottom: 20px;
+      color: #1a73e8;
+      font-size: 0.9rem;
+      text-decoration: none;
+    }
+
+    .earth-link:hover { text-decoration: underline; }
+
+    .night-forecast-title {
+      font-size: 0.85rem;
+      color: #555;
+      margin: 28px 0 8px;
+      font-weight: bold;
+    }
+
+    #night-forecast {
+      display: flex;
+      gap: 8px;
+      overflow-x: auto;
+      padding-bottom: 4px;
+      margin-bottom: 8px;
+    }
+
+    .hour-card {
+      flex: 0 0 auto;
+      min-width: 56px;
+      padding: 8px 10px;
+      border-radius: 6px;
+      text-align: center;
+      background: #fff;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+    }
+
+    .hour-time  { font-size: 0.75rem; color: #666; margin-bottom: 4px; }
+    .hour-cloud { font-size: 0.9rem; font-weight: bold; }
+  </style>
+</head>
+<body>
+
+  <h1>StarGaze</h1>
+  <p class="subtitle">Find the best stargazing conditions near you.</p>
+
+  <div class="search-row">
+    <input id="city-input" type="text" placeholder="Enter a city, e.g. Cape Town" autocomplete="off" />
+    <button id="search-btn">Search</button>
+  </div>
+
+  <div id="message"></div>
+
+  <div id="results">
+    <div class="location-title" id="location-name"></div>
+    <div class="spot-name" id="spot-name"></div>
+    <div class="spot-coords" id="spot-coords"></div>
+    <div class="timestamp" id="timestamp"></div>
+
+    <iframe class="map-frame" id="map-frame" loading="lazy" allowfullscreen referrerpolicy="no-referrer-when-downgrade"></iframe>
+    <a class="earth-link" id="earth-link" target="_blank" rel="noopener">Open exact spot in Google Earth ↗</a>
+
+    <table>
+      <thead>
+        <tr><th>Condition</th><th>Value</th><th>Rating</th></tr>
+      </thead>
+      <tbody id="conditions-body"></tbody>
+    </table>
+
+    <div class="night-forecast-title">Tonight's forecast at this spot</div>
+    <div id="night-forecast"></div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
