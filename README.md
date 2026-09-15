@@ -1,45 +1,53 @@
 # Stargazing Spot Finder
 
-A tool for finding the best nearby spots for stargazing — scoring real-world
-locations on sky darkness, weather, and moon phase so you know what's
-actually worth the drive tonight.
+Given a city, finds the best nearby spot and time tonight for stargazing by
+combining live weather forecasts with a light-pollution estimate.
 
 ## What it does
 
-Given a region, the pipeline pulls candidate outdoor locations, checks how
-dark the sky actually gets at each one, and layers in near-term conditions
-(cloud cover, moon phase) to rank which spots are worth visiting on a given
-night. The goal is finding good stargazing, full stop — camping is just one
-reason someone might end up at one of these spots.
+Enter a city, and the backend checks a grid of nearby candidate points,
+pulls tonight's weather forecast for all of them, and returns whichever one
+has the best combination of clear skies, low wind, low humidity, and dark
+enough conditions — along with the best hour to go out tonight.
 
 ## How it works
 
-The scoring pipeline has three logical steps:
-
-1. **Find candidate locations** — query the Overpass API (OpenStreetMap) for
-   outdoor points in a region (currently campsite tags, used as a reliable
-   proxy for real, accessible locations), cached locally to avoid re-hitting
-   the API.
-2. **Score sky darkness** — sample VIIRS satellite radiance data at each
-   site's coordinates and convert it into a Bortle-like darkness score. This
-   is precomputed, since darkness barely changes day to day.
-3. **Layer in live conditions** — pull hourly cloud cover for the 9pm–3am
-   window from Open-Meteo, and compute moon phase locally. These run fresh
-   per request, since they're time-sensitive.
-
-A composite score combines all three into a ranked list of spots.
+1. **Geocode** the city name to coordinates (Nominatim / OpenStreetMap).
+2. **Generate candidates** — build a grid of points around that location out
+   to a configurable radius.
+3. **Score each candidate** — query Open-Meteo's hourly forecast for every
+   candidate point in one batched request, isolate the next night-time
+   window (skipping daylight hours), and score each hour with a weighted
+   formula: cloud cover, precipitation, wind speed, humidity, and darkness.
+4. **Estimate light pollution** — currently done via nearest-neighbor lookup
+   against a small hardcoded list of well-known dark-sky locations
+   worldwide, falling back to a flat "suburban sky" estimate anywhere far
+   from one of them. This is a placeholder — see Roadmap.
+5. **Return the best spot** — the candidate with the highest average
+   night score, plus its full hour-by-hour forecast.
+6. **Display it** — the frontend shows a conditions table, a map centered
+   on the spot, and an hour-by-hour cloud cover strip for the night.
 
 ## Tech stack
 
-- **Language:** Python
-- **Data/science:** `numpy`, `h5py`, `rasterio`, `geopandas`, `cartopy`,
-  `astropy`, `skyfield`
-- **Frontend:** `streamlit`, `folium` (+ `streamlit-folium` for map embeds)
-- **HTTP:** `requests`
+- **Backend:** Python, FastAPI, `requests`
+- **Frontend:** vanilla JavaScript, HTML/CSS
+- **Data:** Open-Meteo (weather forecasts), Nominatim/OpenStreetMap
+  (geocoding), Google Maps embed (map visualization, no API key required)
 
 ```bash
-pip install numpy h5py rasterio geopandas cartopy astropy skyfield streamlit folium streamlit-folium requests
+pip install fastapi uvicorn requests
+uvicorn main:app --reload
 ```
 
-> **Note:** `rasterio`, `geopandas`, and `cartopy` depend on GDAL/GEOS at the
-> OS
+Then open `http://localhost:8000` in a browser.
+
+## Roadmap
+
+- Replace the hardcoded dark-sky location list with real geographic
+  light-pollution data (e.g. VIIRS satellite radiance), so darkness
+  scoring is accurate anywhere, not just near famous sites.
+- Add moon phase into the scoring formula.
+- Swap the static map embed for an interactive map showing all candidate
+  points, not just the winner.
+- Deploy the backend so the frontend isn't tied to `localhost:8000`.
