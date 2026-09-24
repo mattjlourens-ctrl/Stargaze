@@ -1,5 +1,5 @@
 import math
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 import requests
 from fastapi import FastAPI, HTTPException
@@ -96,7 +96,7 @@ def next_night_window(entry: dict, lat: float, lng: float) -> dict | None:
     if not times:
         return None
 
-    local_now = datetime.utcnow() + timedelta(seconds=entry.get("utc_offset_seconds", 0))
+    local_now = datetime.now(timezone.utc) + timedelta(seconds=entry.get("utc_offset_seconds", 0))
     now_str = local_now.strftime("%Y-%m-%dT%H:%M")
 
     i = next((idx for idx, t in enumerate(times) if t >= now_str), len(times))
@@ -134,7 +134,7 @@ def next_night_window(entry: dict, lat: float, lng: float) -> dict | None:
 
 # ── Weather endpoint ──────────────────────────────────────────────────────────
 @app.get("/api/weather")
-async def get_weather(lat: float, lon: float) -> dict:
+def get_weather(lat: float, lon: float) -> dict:
     url = (
         f"https://api.open-meteo.com/v1/forecast"
         f"?latitude={lat}&longitude={lon}"
@@ -160,7 +160,7 @@ async def get_weather(lat: float, lon: float) -> dict:
 
 # ── Best spot endpoint ────────────────────────────────────────────────────────
 @app.get("/api/best-spot")
-async def get_best_spot(lat: float, lon: float, radius_km: float = 12) -> dict:
+def get_best_spot(lat: float, lon: float, radius_km: float = 12) -> dict:
     spacing_km = max(2.0, radius_km / 4)
     points = generate_grid(lat, lon, radius_km=radius_km, spacing_km=spacing_km)
     if not points:
@@ -210,7 +210,7 @@ async def get_best_spot(lat: float, lon: float, radius_km: float = 12) -> dict:
 
 # ── Spots endpoint ────────────────────────────────────────────────────────────
 @app.get("/api/spots")
-async def get_spots(lat: float, lon: float, radius_km: float = 1000) -> list[dict]:
+def get_spots(lat: float, lon: float, radius_km: float = 1000) -> list[dict]:
     results = []
     for s in DARK_SKY_SPOTS:
         dist = haversine(lat, lon, s["lat"], s["lng"])
