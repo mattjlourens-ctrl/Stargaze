@@ -36,8 +36,8 @@ enough conditions — along with the best hour to go out tonight.
   (geocoding), Google Maps embed (map visualization, no API key required)
 
 ```bash
-pip install fastapi uvicorn requests
-uvicorn main:app --reload
+pip install -r requirements.txt uvicorn
+uvicorn app:app --reload
 ```
 
 Then open `http://localhost:8000` in a browser.

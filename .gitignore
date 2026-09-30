@@ -8,3 +8,10 @@ __pycache__/
 # Logs
 server.log
 *.log
+
+# Environment / secrets
+.env
+.env.*
+
+# Vercel CLI
+.vercel

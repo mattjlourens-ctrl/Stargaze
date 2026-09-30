@@ -1,19 +1,14 @@
 import math
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 import requests
 from fastapi import FastAPI, HTTPException
-from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
-app = FastAPI(title="StarGaze API")
+FRONTEND_DIR = Path(__file__).resolve().parent / "frontend"
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["GET"],
-    allow_headers=["*"],
-)
+app = FastAPI(title="StarGaze API")
 
 # ── Light pollution: static Bortle-scale dataset ──────────────────────────────
 # Real data would come from a shapefile or the Light Pollution Map API.
@@ -230,4 +225,5 @@ def get_spots(lat: float, lon: float, radius_km: float = 1000) -> list[dict]:
     return results[:8]
 
 
-app.mount("/", StaticFiles(directory="frontend", html=True), name="frontend")
+# Mounted last so the /api/* routes above take precedence. html=True serves index.html at "/".
+app.mount("/", StaticFiles(directory=FRONTEND_DIR, html=True), name="frontend")

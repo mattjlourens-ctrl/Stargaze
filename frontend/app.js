@@ -1,4 +1,5 @@
-const API_BASE = 'http://localhost:8000';
+// Frontend and API are served by the same FastAPI app, so use same-origin relative URLs.
+const API_BASE = '';
 
 const cityInput = document.getElementById('city-input');
 const searchBtn = document.getElementById('search-btn');
