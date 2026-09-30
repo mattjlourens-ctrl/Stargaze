@@ -3,162 +3,308 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="color-scheme" content="dark" />
   <title>StarGaze</title>
   <style>
-    body {
-      font-family: Arial, sans-serif;
-      max-width: 600px;
-      margin: 60px auto;
-      padding: 0 20px;
-      background: #f5f5f5;
-      color: #222;
+    :root {
+      --bg-top:        #05070f;
+      --bg-bottom:     #0b1020;
+      --text:          #e8ecf4;
+      --text-muted:    #8b93a7;
+      --accent:        #9db4ff;
+      --accent-strong: #b8c9ff;
+
+      --surface:        rgba(232, 236, 244, 0.035);
+      --surface-raised: rgba(232, 236, 244, 0.06);
+      --border:         rgba(157, 180, 255, 0.14);
+      --divider:        rgba(232, 236, 244, 0.07);
+
+      /* Muted rating tones: readable on navy without glowing */
+      --good: #9fd8b4;
+      --ok:   #e3c689;
+      --bad:  #ee9f9f;
+
+      --radius-sm: 8px;
+      --radius-lg: 14px;
+      --font: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+      --duration-fast: 150ms;
     }
 
-    h1 { font-size: 2rem; margin-bottom: 4px; }
-    p.subtitle { color: #666; margin-bottom: 28px; }
+    * { box-sizing: border-box; }
 
+    /* Gradient lives on <html> so the z-index:-1 starfield canvas paints above it. */
+    html {
+      min-height: 100%;
+      background: var(--bg-top) linear-gradient(to bottom, var(--bg-top), var(--bg-bottom)) fixed;
+    }
+
+    body {
+      min-height: 100vh;
+      margin: 0;
+      padding: 72px 20px 96px;
+      font-family: var(--font);
+      line-height: 1.5;
+      color: var(--text);
+      background: transparent;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    #starfield {
+      position: fixed;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      z-index: -1;
+      pointer-events: none;
+    }
+
+    main {
+      max-width: 620px;
+      margin: 0 auto;
+    }
+
+    /* ── Header ─────────────────────────────────────────── */
+    h1 {
+      margin: 0 0 6px;
+      font-size: 2.25rem;
+      font-weight: 600;
+      letter-spacing: -0.02em;
+    }
+
+    p.subtitle {
+      margin: 0 0 32px;
+      color: var(--text-muted);
+    }
+
+    /* ── Search ─────────────────────────────────────────── */
     .search-row {
       display: flex;
-      gap: 8px;
-      margin-bottom: 32px;
+      gap: 10px;
+      margin-bottom: 20px;
     }
 
     input[type="text"] {
       flex: 1;
-      padding: 10px 14px;
-      font-size: 1rem;
-      border: 1px solid #ccc;
-      border-radius: 4px;
+      min-width: 0;
+      padding: 12px 16px;
+      font: inherit;
+      color: var(--text);
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      transition: border-color var(--duration-fast), background-color var(--duration-fast);
     }
+
+    input[type="text"]::placeholder { color: var(--text-muted); opacity: 0.8; }
+    input[type="text"]:hover { border-color: rgba(157, 180, 255, 0.28); }
+    input[type="text"]:focus { background: var(--surface-raised); }
 
     button {
-      padding: 10px 20px;
-      font-size: 1rem;
-      background: #333;
-      color: #fff;
+      padding: 12px 22px;
+      font: inherit;
+      font-weight: 600;
+      color: var(--bg-top);
+      background: var(--accent);
       border: none;
-      border-radius: 4px;
+      border-radius: var(--radius-sm);
       cursor: pointer;
+      transition: background-color var(--duration-fast), transform var(--duration-fast);
     }
 
-    button:disabled { background: #999; cursor: not-allowed; }
+    button:hover  { background: var(--accent-strong); }
+    button:active { transform: translateY(1px); }
 
-    #results { display: none; }
+    button:disabled {
+      color: var(--text-muted);
+      background: var(--surface-raised);
+      cursor: not-allowed;
+      transform: none;
+    }
+
+    :focus-visible {
+      outline: 2px solid var(--accent);
+      outline-offset: 2px;
+    }
+
+    input[type="text"]:focus-visible {
+      outline-offset: 0;
+      border-color: var(--accent);
+    }
+
+    #message {
+      min-height: 1.5em;
+      color: var(--text-muted);
+      font-size: 0.95rem;
+    }
+
+    /* ── Results ────────────────────────────────────────── */
+    #results {
+      display: none;
+      margin-top: 16px;
+    }
 
     .location-title {
-      font-size: 1.3rem;
-      font-weight: bold;
-      margin-bottom: 4px;
+      margin-bottom: 6px;
+      font-size: 0.8rem;
+      font-weight: 600;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--text-muted);
     }
 
-    .spot-name { font-size: 1rem; margin-bottom: 2px; }
-    .spot-coords { color: #666; font-size: 0.85rem; margin-bottom: 8px; }
-    .timestamp { color: #666; font-size: 0.9rem; margin-bottom: 20px; }
-
-    table {
-      width: 100%;
-      border-collapse: collapse;
-      background: #fff;
-      border-radius: 6px;
-      overflow: hidden;
-      box-shadow: 0 1px 4px rgba(0,0,0,0.1);
+    .spot-name {
+      margin-bottom: 6px;
+      font-size: 1.35rem;
+      font-weight: 500;
+      line-height: 1.3;
     }
 
-    th, td {
-      padding: 12px 16px;
-      text-align: left;
-      border-bottom: 1px solid #eee;
+    .spot-coords {
+      margin-bottom: 20px;
+      font-size: 0.85rem;
+      color: var(--text-muted);
+      font-variant-numeric: tabular-nums;
     }
 
-    th { background: #f0f0f0; font-size: 0.85rem; color: #555; }
-    tr:last-child td { border-bottom: none; }
-
-    .good  { color: #166534; font-weight: bold; }
-    .ok    { color: #92400e; font-weight: bold; }
-    .bad   { color: #991b1b; font-weight: bold; }
-
-    #message { color: #666; font-style: italic; }
+    .timestamp {
+      display: inline-block;
+      margin-bottom: 24px;
+      padding: 8px 14px;
+      font-weight: 500;
+      color: var(--accent);
+      background: rgba(157, 180, 255, 0.08);
+      border: 1px solid var(--border);
+      border-radius: 999px;
+    }
 
     .map-frame {
+      display: block;
       width: 100%;
       aspect-ratio: 16 / 9;
-      border: 0;
-      border-radius: 6px;
-      margin: 16px 0 10px;
-      box-shadow: 0 1px 4px rgba(0,0,0,0.1);
+      margin-bottom: 10px;
+      border: 1px solid var(--border);
+      border-radius: var(--radius-lg);
+      background: var(--surface);
     }
 
     .earth-link {
       display: inline-block;
-      margin-bottom: 20px;
-      color: #1a73e8;
+      margin-bottom: 32px;
       font-size: 0.9rem;
+      color: var(--accent);
       text-decoration: none;
+      border-radius: 4px;
     }
 
-    .earth-link:hover { text-decoration: underline; }
+    .earth-link:hover { text-decoration: underline; text-underline-offset: 3px; }
 
+    /* ── Conditions table ──────────────────────────────── */
+    table {
+      width: 100%;
+      border-collapse: separate;
+      border-spacing: 0;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-lg);
+      overflow: hidden;
+    }
+
+    th, td {
+      padding: 13px 18px;
+      text-align: left;
+      border-bottom: 1px solid var(--divider);
+    }
+
+    th {
+      font-size: 0.75rem;
+      font-weight: 600;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      color: var(--text-muted);
+    }
+
+    td { font-variant-numeric: tabular-nums; }
+    td:first-child { color: var(--text-muted); }
+    tr:last-child td { border-bottom: none; }
+
+    .good { color: var(--good); font-weight: 600; }
+    .ok   { color: var(--ok);   font-weight: 600; }
+    .bad  { color: var(--bad);  font-weight: 600; }
+
+    /* ── Night forecast strip ──────────────────────────── */
     .night-forecast-title {
-      font-size: 0.85rem;
-      color: #555;
-      margin: 28px 0 8px;
-      font-weight: bold;
+      margin: 36px 0 12px;
+      font-size: 0.75rem;
+      font-weight: 600;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      color: var(--text-muted);
     }
 
     #night-forecast {
       display: flex;
       gap: 8px;
       overflow-x: auto;
-      padding-bottom: 4px;
-      margin-bottom: 8px;
+      padding-bottom: 8px;
+      scrollbar-color: var(--border) transparent;
     }
 
     .hour-card {
       flex: 0 0 auto;
-      min-width: 56px;
-      padding: 8px 10px;
-      border-radius: 6px;
+      min-width: 64px;
+      padding: 10px 12px;
       text-align: center;
-      background: #fff;
-      box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+      background: var(--surface);
+      border: 1px solid var(--divider);
+      border-radius: var(--radius-sm);
     }
 
-    .hour-time  { font-size: 0.75rem; color: #666; margin-bottom: 4px; }
-    .hour-cloud { font-size: 0.9rem; font-weight: bold; }
+    .hour-time  { margin-bottom: 4px; font-size: 0.75rem; color: var(--text-muted); }
+    .hour-cloud { font-size: 0.95rem; font-weight: 600; font-variant-numeric: tabular-nums; }
+
+    @media (max-width: 480px) {
+      body { padding-top: 48px; }
+      h1 { font-size: 1.9rem; }
+      th, td { padding: 12px 12px; }
+    }
   </style>
 </head>
 <body>
+  <canvas id="starfield" aria-hidden="true"></canvas>
 
-  <h1>StarGaze</h1>
-  <p class="subtitle">Find the best stargazing conditions near you.</p>
+  <main>
+    <h1>StarGaze</h1>
+    <p class="subtitle">Find the best stargazing conditions near you.</p>
 
-  <div class="search-row">
-    <input id="city-input" type="text" placeholder="Enter a city, e.g. Cape Town" autocomplete="off" />
-    <button id="search-btn">Search</button>
-  </div>
+    <div class="search-row">
+      <input id="city-input" type="text" placeholder="Enter a city, e.g. Cape Town" autocomplete="off" aria-label="City" />
+      <button id="search-btn">Search</button>
+    </div>
 
-  <div id="message"></div>
+    <div id="message" role="status" aria-live="polite"></div>
 
-  <div id="results">
-    <div class="location-title" id="location-name"></div>
-    <div class="spot-name" id="spot-name"></div>
-    <div class="spot-coords" id="spot-coords"></div>
-    <div class="timestamp" id="timestamp"></div>
+    <section id="results" aria-labelledby="location-name">
+      <div class="location-title" id="location-name"></div>
+      <div class="spot-name" id="spot-name"></div>
+      <div class="spot-coords" id="spot-coords"></div>
+      <div class="timestamp" id="timestamp"></div>
 
-    <iframe class="map-frame" id="map-frame" loading="lazy" allowfullscreen referrerpolicy="no-referrer-when-downgrade"></iframe>
-    <a class="earth-link" id="earth-link" target="_blank" rel="noopener">Open exact spot in Google Earth ↗</a>
+      <iframe class="map-frame" id="map-frame" title="Map of the best spot" loading="lazy" allowfullscreen referrerpolicy="no-referrer-when-downgrade"></iframe>
+      <a class="earth-link" id="earth-link" target="_blank" rel="noopener">Open exact spot in Google Earth ↗</a>
 
-    <table>
-      <thead>
-        <tr><th>Condition</th><th>Value</th><th>Rating</th></tr>
-      </thead>
-      <tbody id="conditions-body"></tbody>
-    </table>
+      <table>
+        <thead>
+          <tr><th>Condition</th><th>Value</th><th>Rating</th></tr>
+        </thead>
+        <tbody id="conditions-body"></tbody>
+      </table>
 
-    <div class="night-forecast-title">Tonight's forecast at this spot</div>
-    <div id="night-forecast"></div>
-  </div>
+      <div class="night-forecast-title">Tonight's forecast at this spot</div>
+      <div id="night-forecast"></div>
+    </section>
+  </main>
 
+  <script src="starfield.js"></script>
   <script src="app.js"></script>
 </body>
 </html>
