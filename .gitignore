@@ -1,9 +1,24 @@
 # Python
 __pycache__/
-*.pyc
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.coverage
+htmlcov/
 
-# PyCharm
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Editors / OS
 .idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Node (frontend tests use only node:test, but guard against stray installs)
+node_modules/
 
 # Logs
 server.log

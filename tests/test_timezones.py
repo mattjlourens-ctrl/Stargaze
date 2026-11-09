@@ -11,6 +11,9 @@ from unittest import mock
 from zoneinfo import ZoneInfo
 
 import app
+import scoring
+import weather
+from geo import generate_grid
 
 UTC = timezone.utc
 
@@ -45,7 +48,7 @@ def fake_entry(tz_name: str | None, start: date, hours: int = 48, offset_seconds
 
 
 def window(entry: dict, now: datetime, coords: tuple[float, float]) -> dict | None:
-    return app.next_night_window(entry, coords[0], coords[1], now=now)
+    return scoring.next_night_window(entry, coords[0], coords[1], now=now)
 
 
 class AustinTests(unittest.TestCase):
@@ -174,19 +177,19 @@ class ApiCompatibilityTests(unittest.TestCase):
         response = mock.Mock()
         response.json.return_value = payload
         response.raise_for_status.return_value = None
-        return mock.patch.object(app.requests, "get", return_value=response)
+        return mock.patch.object(weather.requests, "get", return_value=response)
 
     def test_best_spot_response_shape_and_scoring(self):
-        points = app.generate_grid(*AUSTIN, radius_km=12, spacing_km=3)
+        points = generate_grid(*AUSTIN, radius_km=12, spacing_km=3)
         entries = [fake_entry("America/Chicago", date(2026, 11, 9)) for _ in points]
 
         with self._mock_get(entries) as get, \
-                mock.patch.object(app, "utc_now", return_value=datetime(2026, 11, 9, 18, tzinfo=UTC)):
+                mock.patch.object(scoring, "utc_now", return_value=datetime(2026, 11, 9, 18, tzinfo=UTC)):
             result = app.get_best_spot(*AUSTIN)
 
-        url = get.call_args.args[0]
-        self.assertIn("timezone=auto", url)
-        self.assertIn("forecast_days=2", url)
+        params = get.call_args.kwargs["params"]
+        self.assertEqual(params["timezone"], "auto")
+        self.assertEqual(params["forecast_days"], 2)
 
         self.assertEqual(set(result), {"query_center", "timezone", "darkness_available", "message",
                                        "best_spot", "candidates_checked", "radius_km"})
@@ -216,7 +219,7 @@ class ApiCompatibilityTests(unittest.TestCase):
         }
         with self._mock_get(payload) as get:
             result = app.get_weather(35.68, 139.69)
-        self.assertIn("timezone=auto", get.call_args.args[0])
+        self.assertEqual(get.call_args.kwargs["params"]["timezone"], "auto")
         self.assertEqual(result["time"], "2026-11-10T01:00")
         self.assertEqual(result["timezone"], "Asia/Tokyo")
         self.assertEqual(result["cloud_cover"], 5)

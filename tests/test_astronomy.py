@@ -8,9 +8,12 @@ from datetime import date, datetime, timezone
 from unittest import mock
 from zoneinfo import ZoneInfo
 
-from fastapi import HTTPException
-
 import app
+import scoring
+import weather
+from geo import generate_grid
+from scoring import score_conditions
+from weather import WeatherServiceError
 from solar import ASTRONOMICAL_DARKNESS_DEG, is_astronomically_dark, solar_elevation
 from test_timezones import AUSTIN, LONDON, TOKYO, fake_entry, window
 
@@ -128,14 +131,14 @@ class BestSpotEndpointTests(unittest.TestCase):
         response = mock.Mock()
         response.json.return_value = entries
         response.raise_for_status.return_value = None
-        with mock.patch.object(app.requests, "get", return_value=response) as get, \
-                mock.patch.object(app, "utc_now", return_value=now):
-            return app.get_best_spot(*center), get.call_args.args[0]
+        with mock.patch.object(weather.requests, "get", return_value=response) as get, \
+                mock.patch.object(scoring, "utc_now", return_value=now):
+            return app.get_best_spot(*center), get.call_args.kwargs["params"]
 
     def test_no_darkness_returns_structured_result(self):
-        points = app.generate_grid(*TROMSO, radius_km=12, spacing_km=3)
+        points = generate_grid(*TROMSO, radius_km=12, spacing_km=3)
         entries = [fake_entry("Europe/Oslo", date(2026, 6, 20)) for _ in points]
-        result, url = self._call(TROMSO, entries, datetime(2026, 6, 20, 0, tzinfo=UTC))
+        result, params = self._call(TROMSO, entries, datetime(2026, 6, 20, 0, tzinfo=UTC))
         self.assertEqual(result, {
             "query_center": {"lat": TROMSO[0], "lng": TROMSO[1]},
             "timezone": "Europe/Oslo",
@@ -145,15 +148,17 @@ class BestSpotEndpointTests(unittest.TestCase):
             "candidates_checked": len(points),
             "radius_km": 12,
         })
-        self.assertNotIn("is_day", url)
+        self.assertNotIn("is_day", params["hourly"])
 
     def test_missing_forecast_data_is_still_an_upstream_error(self):
-        with self.assertRaises(HTTPException) as ctx:
-            self._call(LONDON, [{"hourly": {}}], datetime(2026, 11, 9, tzinfo=UTC))
+        points = generate_grid(*LONDON, radius_km=12, spacing_km=3)
+        empty = {"hourly": {"time": [], **{f: [] for f in weather.WEATHER_FIELDS}}}
+        with self.assertRaises(WeatherServiceError) as ctx:
+            self._call(LONDON, [empty] * len(points), datetime(2026, 11, 9, tzinfo=UTC))
         self.assertEqual(ctx.exception.status_code, 502)
 
     def test_ranking_picks_clearest_candidate_with_unchanged_scores(self):
-        points = app.generate_grid(*LONDON, radius_km=12, spacing_km=3)
+        points = generate_grid(*LONDON, radius_km=12, spacing_km=3)
         clouds = [(i * 7) % 90 + 5 for i in range(len(points))]  # distinct per candidate
         entries = [fake_entry("Europe/London", date(2026, 11, 9), cloud=c) for c in clouds]
         result, _ = self._call(LONDON, entries, datetime(2026, 11, 9, 12, tzinfo=UTC))
@@ -162,7 +167,7 @@ class BestSpotEndpointTests(unittest.TestCase):
         clearest = points[clouds.index(min(clouds))]
         self.assertEqual((best["lat"], best["lng"]), clearest)
         for h in best["night_forecast"]:
-            self.assertEqual(h["score"], app.score_conditions(min(clouds), 0.0, 5.0, 60, best["bortle_scale"]))
+            self.assertEqual(h["score"], score_conditions(min(clouds), 0.0, 5.0, 60, best["bortle_scale"]))
         self.assertEqual(best["best_hour"]["time"], "2026-11-09T19:00")  # ties → first dark hour
 
 

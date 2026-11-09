@@ -1,201 +1,42 @@
-import math
-from datetime import datetime, timedelta, timezone, tzinfo
+"""Stargaze API: FastAPI app, routes, and the static frontend. Vercel serves the `app` object."""
 from pathlib import Path
-from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+from typing import Annotated
 
-import requests
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, Query, Request
+from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from solar import ASTRONOMICAL_DARKNESS_DEG, solar_elevation
-
-NO_DARKNESS_MESSAGE = "No astronomical darkness is expected within the available forecast period for this location."
+from dark_sky import nearest_bortle, spots_near
+from geo import generate_grid, haversine
+from scoring import next_night_window
+from weather import WeatherServiceError, fetch_current_weather, fetch_hourly_forecasts, location_timezone
 
 FRONTEND_DIR = Path(__file__).resolve().parent / "frontend"
 
+DEFAULT_SEARCH_RADIUS_KM = 12
+MAX_SEARCH_RADIUS_KM = 100
+MIN_GRID_SPACING_KM = 2.0
+DEFAULT_SPOTS_RADIUS_KM = 1000
+MAX_SPOTS_RADIUS_KM = 20_000  # about half of Earth's circumference
+
+NO_DARKNESS_MESSAGE = "No astronomical darkness is expected within the available forecast period for this location."
+
+Latitude = Annotated[float, Query(ge=-90, le=90, description="Latitude in degrees")]
+Longitude = Annotated[float, Query(ge=-180, le=180, description="Longitude in degrees")]
+
 app = FastAPI(title="StarGaze API")
 
-# ── Light pollution: static Bortle-scale dataset ──────────────────────────────
-# Real data would come from a shapefile or the Light Pollution Map API.
-# Each entry: (lat, lng, bortle, name, tags)
-DARK_SKY_SPOTS: list[dict] = [
-    {"lat": 51.178, "lng": -1.826,  "bortle": 3, "name": "Salisbury Plain",         "tags": ["open field", "flat horizon"]},
-    {"lat": 54.45,  "lng": -3.08,   "bortle": 2, "name": "Lake District NP",         "tags": ["mountains", "dark sky reserve"]},
-    {"lat": 36.106, "lng": -112.11, "bortle": 2, "name": "Grand Canyon South Rim",   "tags": ["dark sky park", "high altitude"]},
-    {"lat": 32.27,  "lng": -110.83, "bortle": 3, "name": "Kitt Peak, Arizona",        "tags": ["observatory", "desert"]},
-    {"lat": -22.95, "lng": -68.19,  "bortle": 1, "name": "Atacama Desert",            "tags": ["world class", "high altitude", "dry"]},
-    {"lat": -29.05, "lng": 26.71,   "bortle": 2, "name": "Sutherland, South Africa",  "tags": ["SALT telescope", "karoo"]},
-    {"lat": -32.38, "lng": 20.81,   "bortle": 2, "name": "Matjiesfontein, Karoo",     "tags": ["karoo", "semi-arid"]},
-    {"lat": 28.30,  "lng": -16.51,  "bortle": 2, "name": "Teide NP, Tenerife",        "tags": ["volcano", "dark sky reserve"]},
-    {"lat": 45.86,  "lng": 6.87,    "bortle": 3, "name": "Chamonix, French Alps",     "tags": ["mountains", "alpine"]},
-    {"lat": 35.68,  "lng": 138.56,  "bortle": 3, "name": "Fuji Five Lakes",           "tags": ["mountain", "iconic"]},
-    {"lat": 64.25,  "lng": -20.0,   "bortle": 2, "name": "Central Iceland Highlands", "tags": ["aurora", "lava fields"]},
-    {"lat": -43.5,  "lng": 170.1,   "bortle": 1, "name": "Aoraki Mackenzie, NZ",      "tags": ["dark sky reserve", "southern sky"]},
-    {"lat": 38.61,  "lng": -109.55, "bortle": 2, "name": "Canyonlands NP, Utah",      "tags": ["dark sky park", "canyon"]},
-    {"lat": 47.86,  "lng": 13.8,    "bortle": 3, "name": "Berchtesgaden, Bavaria",    "tags": ["national park", "alpine"]},
-    {"lat": -33.86, "lng": 18.86,   "bortle": 5, "name": "Stellenbosch Wine Valley",  "tags": ["wine region", "partial light"]},
-]
 
-
-def haversine(lat1: float, lng1: float, lat2: float, lng2: float) -> float:
-    """Great-circle distance in km."""
-    R = 6371.0
-    dlat = math.radians(lat2 - lat1)
-    dlng = math.radians(lng2 - lng1)
-    a = math.sin(dlat / 2) ** 2 + math.cos(math.radians(lat1)) * math.cos(math.radians(lat2)) * math.sin(dlng / 2) ** 2
-    return R * 2 * math.asin(math.sqrt(a))
-
-
-def nearest_bortle(lat: float, lng: float) -> int:
-    """Return Bortle scale at the given point by finding the nearest known spot."""
-    nearest = min(DARK_SKY_SPOTS, key=lambda s: haversine(lat, lng, s["lat"], s["lng"]))
-    dist = haversine(lat, lng, nearest["lat"], nearest["lng"])
-    # If far from any known dark spot assume suburban sky (Bortle 6)
-    if dist > 500:
-        return 6
-    return nearest["bortle"]
-
-
-def generate_grid(lat: float, lon: float, radius_km: float, spacing_km: float) -> list[tuple[float, float]]:
-    """Candidate points on a square grid, clipped to a circle of radius_km around (lat, lon)."""
-    steps = max(1, round(radius_km / spacing_km))
-    km_per_deg_lat = 111.0
-    km_per_deg_lng = 111.0 * math.cos(math.radians(lat)) or 111.0
-
-    points = []
-    for i in range(-steps, steps + 1):
-        for j in range(-steps, steps + 1):
-            plat = lat + (i * spacing_km) / km_per_deg_lat
-            plng = lon + (j * spacing_km) / km_per_deg_lng
-            if haversine(lat, lon, plat, plng) <= radius_km:
-                points.append((plat, plng))
-    return points
-
-
-def score_conditions(cloud_cover: float, precipitation: float, wind_speed: float, humidity: float, bortle: int) -> float:
-    """Higher is better for stargazing: rewards clear, dry, calm, dark skies."""
-    score = 100.0
-    score -= cloud_cover * 0.6
-    score -= min(precipitation, 10) * 8
-    score -= min(wind_speed, 40) * 0.3
-    score -= max(0.0, humidity - 50) * 0.2
-    score -= (bortle - 1) * 5
-    return round(score, 1)
-
-
-def location_timezone(entry: dict) -> tuple[tzinfo, str]:
-    """The forecast location's timezone and its name, from Open-Meteo's `timezone=auto` response.
-    Prefers the IANA zone (DST-aware); falls back to the fixed `utc_offset_seconds`."""
-    name = entry.get("timezone")
-    if name:
-        try:
-            return ZoneInfo(name), name
-        except (ZoneInfoNotFoundError, ValueError):
-            pass
-    offset = timezone(timedelta(seconds=entry.get("utc_offset_seconds", 0)))
-    return offset, offset.tzname(None)
-
-
-def localize_times(times: list[str], tz: tzinfo) -> list[datetime]:
-    """Attach tz to Open-Meteo's naive local wall-clock strings ("YYYY-MM-DDTHH:MM").
-    A wall-clock time that repeats (DST fall-back) is the second occurrence, so it gets fold=1."""
-    seen: set[datetime] = set()
-    localized = []
-    for t in times:
-        naive = datetime.fromisoformat(t)
-        localized.append(naive.replace(tzinfo=tz, fold=int(naive in seen)))
-        seen.add(naive)
-    return localized
-
-
-def utc_now() -> datetime:
-    return datetime.now(timezone.utc)
-
-
-def next_night_window(entry: dict, lat: float, lng: float, now: datetime | None = None) -> dict | None:
-    """From an hourly forecast entry, pull the next contiguous block of astronomically dark hours
-    (Sun's center at or below -18°) starting from now, score each hour, and summarize the block.
-    None if no such hour remains in the forecast — twilight hours are never substituted.
-
-    `now` is an aware datetime (defaults to the current time); it is compared as an absolute
-    instant, so the server's own timezone never affects which hours are selected."""
-    hourly = entry.get("hourly", {})
-    times = hourly.get("time", [])
-    cloud = hourly.get("cloud_cover", [])
-    precip = hourly.get("precipitation", [])
-    wind = hourly.get("wind_speed_10m", [])
-    humidity = hourly.get("relative_humidity_2m", [])
-    if not times:
-        return None
-
-    tz, tz_name = location_timezone(entry)
-    local_times = localize_times(times, tz)
-    # Compare in UTC: aware datetimes sharing a tzinfo compare by wall clock, ignoring fold.
-    now_utc = (now or utc_now()).astimezone(timezone.utc).replace(second=0, microsecond=0)
-
-    # Elevations are computed lazily: only from now until the end of the first dark block.
-    elevations: dict[int, float] = {}
-
-    def is_dark(idx: int) -> bool:
-        if idx not in elevations:
-            elevations[idx] = solar_elevation(lat, lng, local_times[idx])
-        return elevations[idx] <= ASTRONOMICAL_DARKNESS_DEG
-
-    i = next((idx for idx, dt in enumerate(local_times) if dt.astimezone(timezone.utc) >= now_utc), len(times))
-    while i < len(times) and not is_dark(i):  # skip daylight and civil/nautical/astronomical twilight
-        i += 1
-
-    night_indices = []
-    while i < len(times) and is_dark(i):
-        night_indices.append(i)
-        i += 1
-
-    if not night_indices:
-        return None
-
-    bortle = nearest_bortle(lat, lng)
-    hours = []
-    for idx in night_indices:
-        c, p, w, h = cloud[idx], precip[idx], wind[idx], humidity[idx]
-        local_dt = local_times[idx]
-        hours.append({
-            "time":            times[idx],  # location's local wall clock, "YYYY-MM-DDTHH:MM"
-            "time_iso":        local_dt.isoformat(timespec="minutes"),  # same instant with UTC offset
-            "tz_abbreviation": local_dt.tzname(),
-            "sun_elevation":   round(elevations[idx], 1),
-            "cloud_cover":   c,
-            "precipitation": p,
-            "wind_speed":    w,
-            "humidity":      h,
-            "score":         score_conditions(c, p, w, h, bortle),
-        })
-
-    return {
-        "timezone":        tz_name,
-        "bortle_scale":    bortle,
-        "avg_night_score": round(sum(h["score"] for h in hours) / len(hours), 1),
-        "best_hour":       max(hours, key=lambda h: h["score"]),
-        "night_forecast":  hours,
-    }
+@app.exception_handler(WeatherServiceError)
+def weather_service_error(_request: Request, exc: WeatherServiceError) -> JSONResponse:
+    return JSONResponse(status_code=exc.status_code, content={"detail": exc.message})
 
 
 # ── Weather endpoint ──────────────────────────────────────────────────────────
 @app.get("/api/weather")
-def get_weather(lat: float, lon: float) -> dict:
-    url = (
-        f"https://api.open-meteo.com/v1/forecast"
-        f"?latitude={lat}&longitude={lon}"
-        f"&current=cloud_cover,precipitation,wind_speed_10m,relative_humidity_2m,visibility"
-        f"&timezone=auto&forecast_days=1"
-    )
-    try:
-        res = requests.get(url, timeout=8)
-        res.raise_for_status()
-        raw = res.json()
-        data = raw["current"]
-    except Exception as exc:
-        raise HTTPException(status_code=502, detail=f"Weather API error: {exc}") from exc
-
+def get_weather(lat: Latitude, lon: Longitude) -> dict:
+    raw = fetch_current_weather(lat, lon)
+    data = raw["current"]
     return {
         "time":          data.get("time", ""),
         "timezone":      location_timezone(raw)[1],
@@ -209,29 +50,14 @@ def get_weather(lat: float, lon: float) -> dict:
 
 # ── Best spot endpoint ────────────────────────────────────────────────────────
 @app.get("/api/best-spot")
-def get_best_spot(lat: float, lon: float, radius_km: float = 12) -> dict:
-    spacing_km = max(2.0, radius_km / 4)
-    points = generate_grid(lat, lon, radius_km=radius_km, spacing_km=spacing_km)
-    if not points:
-        points = [(lat, lon)]
-
-    lat_str = ",".join(f"{p[0]:.5f}" for p in points)
-    lng_str = ",".join(f"{p[1]:.5f}" for p in points)
-    url = (
-        f"https://api.open-meteo.com/v1/forecast"
-        f"?latitude={lat_str}&longitude={lng_str}"
-        f"&hourly=cloud_cover,precipitation,wind_speed_10m,relative_humidity_2m"
-        f"&timezone=auto&forecast_days=2"
-    )
-    try:
-        res = requests.get(url, timeout=15)
-        res.raise_for_status()
-        raw = res.json()
-    except Exception as exc:
-        raise HTTPException(status_code=502, detail=f"Weather API error: {exc}") from exc
-
-    # Open-Meteo returns a bare object for a single coordinate, a list for multiple.
-    entries = raw if isinstance(raw, list) else [raw]
+def get_best_spot(
+    lat: Latitude,
+    lon: Longitude,
+    radius_km: Annotated[float, Query(gt=0, le=MAX_SEARCH_RADIUS_KM)] = DEFAULT_SEARCH_RADIUS_KM,
+) -> dict:
+    spacing_km = max(MIN_GRID_SPACING_KM, radius_km / 4)
+    points = generate_grid(lat, lon, radius_km=radius_km, spacing_km=spacing_km) or [(lat, lon)]
+    entries = fetch_hourly_forecasts(points)
 
     candidates = []
     for (plat, plng), entry in zip(points, entries):
@@ -246,9 +72,9 @@ def get_best_spot(lat: float, lon: float, radius_km: float = 12) -> dict:
         })
 
     if not candidates:
-        forecasts = [e for e in entries if e.get("hourly", {}).get("time")]
+        forecasts = [e for e in entries if e["hourly"]["time"]]
         if not forecasts:
-            raise HTTPException(status_code=502, detail="No night forecast data available for this area")
+            raise WeatherServiceError("The weather service returned no forecast data for this area.")
         # Forecast exists but never reaches astronomical darkness (e.g. high-latitude summer).
         return {
             "query_center":       {"lat": lat, "lng": lon},
@@ -274,24 +100,12 @@ def get_best_spot(lat: float, lon: float, radius_km: float = 12) -> dict:
 
 # ── Spots endpoint ────────────────────────────────────────────────────────────
 @app.get("/api/spots")
-def get_spots(lat: float, lon: float, radius_km: float = 1000) -> list[dict]:
-    results = []
-    for s in DARK_SKY_SPOTS:
-        dist = haversine(lat, lon, s["lat"], s["lng"])
-        if dist <= radius_km:
-            score = max(0, round(100 - s["bortle"] * 10 - (dist / radius_km) * 10))
-            results.append({
-                "name":        s["name"],
-                "lat":         s["lat"],
-                "lng":         s["lng"],
-                "bortle":      s["bortle"],
-                "distance_km": dist,
-                "score":       score,
-                "tags":        s["tags"],
-            })
-
-    results.sort(key=lambda x: x["score"], reverse=True)
-    return results[:8]
+def get_spots(
+    lat: Latitude,
+    lon: Longitude,
+    radius_km: Annotated[float, Query(gt=0, le=MAX_SPOTS_RADIUS_KM)] = DEFAULT_SPOTS_RADIUS_KM,
+) -> list[dict]:
+    return spots_near(lat, lon, radius_km)
 
 
 # Mounted last so the /api/* routes above take precedence. html=True serves index.html at "/".
