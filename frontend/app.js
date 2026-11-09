@@ -91,10 +91,10 @@ function displayResults(cityName, spotName, result) {
   document.getElementById('earth-link').href = googleEarthUrl(weather.lat, weather.lng);
 
   const best = weather.best_hour;
-  const bestTime = best.time
-    ? new Date(best.time).toLocaleString([], { weekday: 'short', hour: 'numeric', minute: '2-digit' })
-    : '—';
-  document.getElementById('timestamp').textContent = `Best time tonight: ${bestTime}`;
+  const tzName = result.timezone || weather.timezone;
+  const tzSuffix = tzName ? ` · ${tzName} time` : '';
+  document.getElementById('timestamp').textContent =
+    `Best viewing time: ${formatViewingTime(best, [])}${tzSuffix}`;
 
   const rows = [
     {
@@ -147,14 +147,23 @@ function displayResults(cityName, spotName, result) {
     </tr>
   `).join('');
 
-  renderNightForecast(weather.night_forecast);
+  renderNightForecast(weather.night_forecast, tzName);
 
   results.style.display = 'block';
 }
 
-function renderNightForecast(nightForecast) {
+function renderNightForecast(nightForecast, tzName) {
+  const firstAbbr = nightForecast.length ? nightForecast[0].tz_abbreviation : '';
+  const tzLabel = [firstAbbr, tzName].filter(Boolean).join(', ');
+  document.querySelector('.night-forecast-title').textContent =
+    `Tonight's forecast at this spot${tzLabel ? ` (${tzLabel})` : ''}`;
+
+  let prevAbbr = firstAbbr;
   document.getElementById('night-forecast').innerHTML = nightForecast.map(h => {
-    const t = h.time ? new Date(h.time).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }) : '—';
+    // Label an hour only when the offset changes mid-night (a DST transition).
+    const abbrChanged = h.tz_abbreviation && h.tz_abbreviation !== prevAbbr;
+    prevAbbr = h.tz_abbreviation || prevAbbr;
+    const t = formatHourTime(h, []) + (abbrChanged ? ` ${h.tz_abbreviation}` : '');
     return `
       <div class="hour-card">
         <div class="hour-time">${t}</div>

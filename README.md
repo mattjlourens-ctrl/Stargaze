@@ -41,6 +41,24 @@ Higher scores indicate more favorable conditions under this heuristic. A candida
 
 > **Light-pollution limitation:** The current Bortle estimate uses the nearest entry in a small hardcoded dataset of dark-sky locations. When a candidate is more than 500 km from every entry, the backend assumes Bortle 6. This is a placeholder, **not** a reliable light-pollution measurement for arbitrary coordinates.
 
+### Timezones
+
+All forecast times are shown in the **searched location's** local time, not the visitor's. Searching Tokyo from Texas shows Japan Standard Time and Tokyo's calendar date.
+
+- **Determining the timezone:** Forecasts are requested from Open-Meteo with `timezone=auto`, which resolves each coordinate to an IANA zone such as `America/Chicago` or `Asia/Tokyo`. The backend loads that zone with Python's `zoneinfo`. If the zone is missing or unknown, it falls back to Open-Meteo's fixed `utc_offset_seconds`.
+- **Selecting the nighttime window:** The current moment is compared against each forecast hour as an absolute UTC instant, so neither the server's nor the visitor's timezone affects the result. This handles locations that are already on a different calendar day, windows that cross midnight, and DST changes during the night. When clocks fall back, the repeated hour is kept as two distinct hours with different offsets.
+- **Displaying times:** The frontend never passes offset-less timestamps to `new Date()`, which would interpret them in the visitor's timezone. It formats the local wall-clock fields directly and labels them with the abbreviation the backend computed for each hour, for example `Tue, Nov 10, 3:00 AM JST · Asia/Tokyo time`. If the abbreviation changes mid-night because of a DST transition, the hourly forecast labels the affected hour.
+
+**Timestamp format.** Each hour in `night_forecast` (and `best_hour`) contains:
+
+| Field | Example | Meaning |
+| --- | --- | --- |
+| `time` | `2026-11-09T21:00` | Local wall-clock time at the location (unchanged from earlier versions) |
+| `time_iso` | `2026-11-09T21:00-06:00` | The same moment as ISO 8601 with its UTC offset |
+| `tz_abbreviation` | `CST` | Timezone abbreviation in effect for that hour |
+
+The response also includes the location's IANA zone as `timezone`, both at the top level and on `best_spot`.
+
 ## Tech stack
 
 | Layer | Technologies |
@@ -113,7 +131,16 @@ For example:
 http://127.0.0.1:8000/api/best-spot?lat=30.2672&lon=-97.7431
 ```
 
-The `/api/best-spot` response includes the search center, recommended location, distance from the city center, average nighttime score, best hour, hourly nighttime forecast, number of candidates evaluated, and search radius.
+The `/api/best-spot` response includes the search center, the location's IANA timezone, recommended location, distance from the city center, average nighttime score, best hour, hourly nighttime forecast, number of candidates evaluated, and search radius. `/api/weather` returns its `time` in the location's local time, along with `timezone`. See [Timezones](#timezones) for the timestamp format.
+
+## Running tests
+
+Tests use synthetic forecasts and need no network access:
+
+```bash
+python -m unittest discover tests        # backend: night-window selection, timezones, API shape
+node --test tests/time-format.test.js    # frontend: time formatting (Node 18+)
+```
 
 ## Project structure
 
@@ -123,7 +150,9 @@ Stargaze/
 ├── frontend/
 │   ├── index.html         # Page layout and styles
 │   ├── app.js              # Search and results rendering
+│   ├── time-format.js      # Formats forecast times in the searched location's timezone
 │   └── starfield.js        # Decorative canvas starfield
+├── tests/                 # Backend (unittest) and frontend (node:test) tests
 ├── requirements.txt       # Python application dependencies
 ├── .gitignore
 └── README.md
@@ -134,17 +163,18 @@ Stargaze/
 - **Approximate darkness data:** The built-in Bortle estimates do not replace a geographic light-pollution dataset.
 - **Accessibility:** The search evaluates coordinate points, not verified public, reachable, or safe observation sites.
 - **Weather-only simplification:** The score does not account for moon illumination, astronomical twilight, horizon obstructions, or seeing conditions.
-- **Time display:** The frontend currently parses forecast timestamps in the browser; displayed times may need correction when the user's timezone differs from the searched location.
+- **Timezone of the winning spot:** Times use the timezone of the recommended coordinate. Near a timezone border, a candidate up to 12 km away can fall in a different zone from the searched city. The label always names the zone actually used.
+- **Abbreviations:** Some zones have no common abbreviation, and the label then shows a numeric offset such as `-03`. Daylight saving rules come from the `tzdata` package and are only as current as the installed version.
 - **Map coverage:** The map displays the winning coordinate, not every evaluated candidate.
 
 ## Roadmap
 
 - [ ] Replace placeholder Bortle estimates with geographically accurate light-pollution data, such as VIIRS-derived radiance data.
 - [ ] Include moon phase and illumination in the scoring model.
-- [ ] Correct timezone-aware display of recommended viewing times.
+- [x] Correct timezone-aware display of recommended viewing times.
 - [ ] Show candidate locations on an interactive map.
 - [ ] Improve location suitability checks and error handling.
-- [ ] Add automated tests for grid generation, scoring, nighttime selection, and API responses.
+- [ ] Expand automated tests: nighttime selection, timezones, and API responses are covered; grid generation and spot ranking are not yet.
 
 ## Data sources
 

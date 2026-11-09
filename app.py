@@ -1,6 +1,7 @@
 import math
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone, tzinfo
 from pathlib import Path
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import requests
 from fastapi import FastAPI, HTTPException
@@ -78,9 +79,37 @@ def score_conditions(cloud_cover: float, precipitation: float, wind_speed: float
     return round(score, 1)
 
 
-def next_night_window(entry: dict, lat: float, lng: float) -> dict | None:
+def location_timezone(entry: dict) -> tuple[tzinfo, str]:
+    """The forecast location's timezone and its name, from Open-Meteo's `timezone=auto` response.
+    Prefers the IANA zone (DST-aware); falls back to the fixed `utc_offset_seconds`."""
+    name = entry.get("timezone")
+    if name:
+        try:
+            return ZoneInfo(name), name
+        except (ZoneInfoNotFoundError, ValueError):
+            pass
+    offset = timezone(timedelta(seconds=entry.get("utc_offset_seconds", 0)))
+    return offset, offset.tzname(None)
+
+
+def localize_times(times: list[str], tz: tzinfo) -> list[datetime]:
+    """Attach tz to Open-Meteo's naive local wall-clock strings ("YYYY-MM-DDTHH:MM").
+    A wall-clock time that repeats (DST fall-back) is the second occurrence, so it gets fold=1."""
+    seen: set[datetime] = set()
+    localized = []
+    for t in times:
+        naive = datetime.fromisoformat(t)
+        localized.append(naive.replace(tzinfo=tz, fold=int(naive in seen)))
+        seen.add(naive)
+    return localized
+
+
+def next_night_window(entry: dict, lat: float, lng: float, now: datetime | None = None) -> dict | None:
     """From an hourly forecast entry, pull the next contiguous block of night (is_day == 0)
-    hours starting from now, score each hour, and summarize the block. None if no night data."""
+    hours starting from now, score each hour, and summarize the block. None if no night data.
+
+    `now` is an aware datetime (defaults to the current time); it is compared as an absolute
+    instant, so the server's own timezone never affects which hours are selected."""
     hourly = entry.get("hourly", {})
     times = hourly.get("time", [])
     is_day = hourly.get("is_day", [])
@@ -91,10 +120,12 @@ def next_night_window(entry: dict, lat: float, lng: float) -> dict | None:
     if not times:
         return None
 
-    local_now = datetime.now(timezone.utc) + timedelta(seconds=entry.get("utc_offset_seconds", 0))
-    now_str = local_now.strftime("%Y-%m-%dT%H:%M")
+    tz, tz_name = location_timezone(entry)
+    local_times = localize_times(times, tz)
+    # Compare in UTC: aware datetimes sharing a tzinfo compare by wall clock, ignoring fold.
+    now_utc = (now or datetime.now(timezone.utc)).astimezone(timezone.utc).replace(second=0, microsecond=0)
 
-    i = next((idx for idx, t in enumerate(times) if t >= now_str), len(times))
+    i = next((idx for idx, dt in enumerate(local_times) if dt.astimezone(timezone.utc) >= now_utc), len(times))
     while i < len(times) and is_day[i] == 1:  # skip any remaining daylight hours
         i += 1
 
@@ -110,8 +141,11 @@ def next_night_window(entry: dict, lat: float, lng: float) -> dict | None:
     hours = []
     for idx in night_indices:
         c, p, w, h = cloud[idx], precip[idx], wind[idx], humidity[idx]
+        local_dt = local_times[idx]
         hours.append({
-            "time":          times[idx],
+            "time":            times[idx],  # location's local wall clock, "YYYY-MM-DDTHH:MM"
+            "time_iso":        local_dt.isoformat(timespec="minutes"),  # same instant with UTC offset
+            "tz_abbreviation": local_dt.tzname(),
             "cloud_cover":   c,
             "precipitation": p,
             "wind_speed":    w,
@@ -120,6 +154,7 @@ def next_night_window(entry: dict, lat: float, lng: float) -> dict | None:
         })
 
     return {
+        "timezone":        tz_name,
         "bortle_scale":    bortle,
         "avg_night_score": round(sum(h["score"] for h in hours) / len(hours), 1),
         "best_hour":       max(hours, key=lambda h: h["score"]),
@@ -134,17 +169,19 @@ def get_weather(lat: float, lon: float) -> dict:
         f"https://api.open-meteo.com/v1/forecast"
         f"?latitude={lat}&longitude={lon}"
         f"&current=cloud_cover,precipitation,wind_speed_10m,relative_humidity_2m,visibility"
-        f"&forecast_days=1"
+        f"&timezone=auto&forecast_days=1"
     )
     try:
         res = requests.get(url, timeout=8)
         res.raise_for_status()
-        data = res.json()["current"]
+        raw = res.json()
+        data = raw["current"]
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"Weather API error: {exc}") from exc
 
     return {
         "time":          data.get("time", ""),
+        "timezone":      location_timezone(raw)[1],
         "cloud_cover":   data.get("cloud_cover", 0),
         "precipitation": data.get("precipitation", 0.0),
         "wind_speed":    data.get("wind_speed_10m", 0.0),
@@ -197,6 +234,7 @@ def get_best_spot(lat: float, lon: float, radius_km: float = 12) -> dict:
     best = max(candidates, key=lambda c: c["avg_night_score"])
     return {
         "query_center":       {"lat": lat, "lng": lon},
+        "timezone":           best["timezone"],
         "best_spot":          best,
         "candidates_checked": len(candidates),
         "radius_km":          radius_km,
