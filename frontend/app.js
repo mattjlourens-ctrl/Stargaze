@@ -26,6 +26,12 @@ async function handleSearch() {
     }
 
     const result = await fetchBestSpot(geo.lat, geo.lng);
+    if (!result.best_spot) {
+      // e.g. high-latitude summer: twilight all night, so there is no viewing time to recommend.
+      message.textContent = result.message ||
+        'No astronomical darkness is expected within the available forecast period for this location.';
+      return;
+    }
     const spotName = await reverseGeocode(result.best_spot.lat, result.best_spot.lng);
     displayResults(geo.displayName, spotName, result);
 
@@ -156,7 +162,7 @@ function renderNightForecast(nightForecast, tzName) {
   const firstAbbr = nightForecast.length ? nightForecast[0].tz_abbreviation : '';
   const tzLabel = [firstAbbr, tzName].filter(Boolean).join(', ');
   document.querySelector('.night-forecast-title').textContent =
-    `Tonight's forecast at this spot${tzLabel ? ` (${tzLabel})` : ''}`;
+    `Astronomically dark hours at this spot (Sun 18°+ below horizon)${tzLabel ? ` · ${tzLabel}` : ''}`;
 
   let prevAbbr = firstAbbr;
   document.getElementById('night-forecast').innerHTML = nightForecast.map(h => {

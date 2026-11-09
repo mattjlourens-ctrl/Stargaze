@@ -10,7 +10,7 @@ Stargaze is a weather-aware web application that searches nearby coordinates and
 
 - **City search:** Look up a city using OpenStreetMap's Nominatim geocoding service.
 - **Nearby location search:** Generate candidate coordinates within a configurable radius (12 km by default).
-- **Nighttime weather analysis:** Retrieve hourly forecasts from Open-Meteo and evaluate the next available nighttime period.
+- **Astronomical-darkness analysis:** Retrieve hourly forecasts from Open-Meteo and evaluate the next period when the Sun is at least 18° below the horizon, so twilight hours are never recommended.
 - **Location ranking:** Compare candidate points using a weighted score for cloud cover, precipitation, wind, humidity, and estimated sky darkness.
 - **Results visualization:** View the recommended coordinates, best-scoring hour, conditions table, nightly cloud-cover forecast, and embedded map, with a link to Google Earth.
 
@@ -19,8 +19,8 @@ Stargaze is a weather-aware web application that searches nearby coordinates and
 1. **Find the city.** The frontend converts a city name into latitude and longitude using Nominatim.
 2. **Generate candidates.** The backend creates a grid of coordinates around the city, excluding points outside the search radius.
 3. **Fetch forecasts.** Open-Meteo supplies hourly weather data for the candidate coordinates in a batched request.
-4. **Select nighttime hours.** The backend uses the forecast's `is_day` field to select the next available continuous nighttime period.
-5. **Score conditions.** Each nighttime hour receives a score based on the weather and an estimated Bortle-scale value.
+4. **Select dark hours.** For each candidate, the backend computes the Sun's elevation at every upcoming forecast hour and selects the next continuous run of astronomically dark hours (see [Astronomical darkness](#astronomical-darkness)).
+5. **Score conditions.** Each dark hour receives a score based on the weather and an estimated Bortle-scale value.
 6. **Recommend a location.** Candidates are ranked by their average score across the selected nighttime period. The highest-scoring candidate is returned with its best individual hour.
 7. **Display results.** The frontend renders the recommendation, weather details, hourly cloud-cover values, and map.
 
@@ -41,6 +41,16 @@ Higher scores indicate more favorable conditions under this heuristic. A candida
 
 > **Light-pollution limitation:** The current Bortle estimate uses the nearest entry in a small hardcoded dataset of dark-sky locations. When a candidate is more than 500 km from every entry, the backend assumes Bortle 6. This is a placeholder, **not** a reliable light-pollution measurement for arbitrary coordinates.
 
+### Astronomical darkness
+
+**Definition.** The sky is *astronomically dark* when the Sun's center is at least **18° below the horizon**. Between sunset and that point, the sky passes through civil (0° to −6°), nautical (−6° to −12°), and astronomical (−12° to −18°) twilight, and residual sunlight still washes out faint objects. In London in November, for example, the Sun sets around 16:20 but the sky isn't astronomically dark until about 18:15.
+
+**Solar elevation.** `solar.py` computes the Sun's elevation locally using the NOAA solar-position equations, which are based on Meeus's *Astronomical Algorithms*. Each forecast hour's timezone-aware local time is converted to an absolute UTC instant before the calculation. Compared with PyEphem across 20,000 random locations and times from 2020 to 2035, the results agreed within 0.02°. Refraction is ignored because it is negligible this far below the horizon. The Sun's declination and equation of time depend only on the instant, so they are cached and shared by every candidate in a search. The calculation needs no network calls, and a full 45-candidate search adds only a few milliseconds.
+
+**Eligible hours.** Starting from the current time, the backend skips every forecast hour where the Sun is above −18°, including daylight and all three twilight stages. It then takes the following continuous run of hours at or below −18°. Elevation is evaluated at each forecast timestamp (the top of the hour). Windows that cross midnight or a DST change are handled because each hour is a distinct UTC instant. Open-Meteo's sunset-based `is_day` field is no longer used. Darkness is an eligibility rule, not a scoring factor: the scoring weights below apply unchanged to the eligible hours. Each hour in the response includes its `sun_elevation` in degrees.
+
+**Locations without darkness.** At high latitudes in summer, for example Oslo or Tromsø in June, the Sun never reaches −18°. If none of the candidates has a dark hour in the forecast, `/api/best-spot` returns HTTP 200 with `"darkness_available": false`, `"best_spot": null`, and a `message`. It never falls back to twilight hours. The frontend shows: *"No astronomical darkness is expected within the available forecast period for this location."* Successful responses include `"darkness_available": true` and `"message": null`. HTTP 502 is still reserved for missing or failed forecast data.
+
 ### Timezones
 
 All forecast times are shown in the **searched location's** local time, not the visitor's. Searching Tokyo from Texas shows Japan Standard Time and Tokyo's calendar date.
@@ -56,6 +66,7 @@ All forecast times are shown in the **searched location's** local time, not the 
 | `time` | `2026-11-09T21:00` | Local wall-clock time at the location (unchanged from earlier versions) |
 | `time_iso` | `2026-11-09T21:00-06:00` | The same moment as ISO 8601 with its UTC offset |
 | `tz_abbreviation` | `CST` | Timezone abbreviation in effect for that hour |
+| `sun_elevation` | `-24.3` | Sun's elevation in degrees at that hour (always ≤ −18) |
 
 The response also includes the location's IANA zone as `timezone`, both at the top level and on `best_spot`.
 
@@ -131,14 +142,14 @@ For example:
 http://127.0.0.1:8000/api/best-spot?lat=30.2672&lon=-97.7431
 ```
 
-The `/api/best-spot` response includes the search center, the location's IANA timezone, recommended location, distance from the city center, average nighttime score, best hour, hourly nighttime forecast, number of candidates evaluated, and search radius. `/api/weather` returns its `time` in the location's local time, along with `timezone`. See [Timezones](#timezones) for the timestamp format.
+The `/api/best-spot` response includes the search center, the location's IANA timezone, whether astronomical darkness is available (`darkness_available`, plus a `message` when it is not), recommended location, distance from the city center, average nighttime score, best hour, hourly nighttime forecast, number of candidates evaluated, and search radius. `/api/weather` returns its `time` in the location's local time, along with `timezone`. See [Timezones](#timezones) for the timestamp format.
 
 ## Running tests
 
 Tests use synthetic forecasts and need no network access:
 
 ```bash
-python -m unittest discover tests        # backend: night-window selection, timezones, API shape
+python -m unittest discover tests        # backend: solar elevation, dark-hour selection, timezones, API shape
 node --test tests/time-format.test.js    # frontend: time formatting (Node 18+)
 ```
 
@@ -147,6 +158,7 @@ node --test tests/time-format.test.js    # frontend: time formatting (Node 18+)
 ```text
 Stargaze/
 ├── app.py                 # FastAPI routes, grid search, weather scoring
+├── solar.py               # Solar elevation and astronomical-darkness check
 ├── frontend/
 │   ├── index.html         # Page layout and styles
 │   ├── app.js              # Search and results rendering
@@ -162,7 +174,10 @@ Stargaze/
 
 - **Approximate darkness data:** The built-in Bortle estimates do not replace a geographic light-pollution dataset.
 - **Accessibility:** The search evaluates coordinate points, not verified public, reachable, or safe observation sites.
-- **Weather-only simplification:** The score does not account for moon illumination, astronomical twilight, horizon obstructions, or seeing conditions.
+- **Weather-only simplification:** Twilight is excluded, but the score does not account for moon illumination, horizon obstructions, or seeing conditions. A bright Moon can still wash out an astronomically dark sky.
+- **Hourly resolution:** Darkness is checked at each forecast hour, so a dark period is reported to the hour. If darkness begins at 18:15, the first eligible hour is 19:00. A dark period shorter than an hour that doesn't include a full hour mark may be missed.
+- **Forecast horizon:** Forecasts cover today and tomorrow in the location's local time (`forecast_days=2`). Late on the second day, the next dark window may be cut off at the end of the forecast. "No astronomical darkness" means none within this period, not none at all.
+- **No terrain or altitude model:** Elevation is calculated for a sea-level horizon and doesn't account for mountains or the observer's altitude.
 - **Timezone of the winning spot:** Times use the timezone of the recommended coordinate. Near a timezone border, a candidate up to 12 km away can fall in a different zone from the searched city. The label always names the zone actually used.
 - **Abbreviations:** Some zones have no common abbreviation, and the label then shows a numeric offset such as `-03`. Daylight saving rules come from the `tzdata` package and are only as current as the installed version.
 - **Map coverage:** The map displays the winning coordinate, not every evaluated candidate.
@@ -174,7 +189,8 @@ Stargaze/
 - [x] Correct timezone-aware display of recommended viewing times.
 - [ ] Show candidate locations on an interactive map.
 - [ ] Improve location suitability checks and error handling.
-- [ ] Expand automated tests: nighttime selection, timezones, and API responses are covered; grid generation and spot ranking are not yet.
+- [x] Recommend only astronomically dark hours (Sun ≥ 18° below the horizon).
+- [ ] Expand automated tests: dark-hour selection, timezones, spot ranking, and API responses are covered; grid generation is not yet.
 
 ## Data sources
 

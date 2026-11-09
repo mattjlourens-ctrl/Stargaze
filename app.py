@@ -7,6 +7,10 @@ import requests
 from fastapi import FastAPI, HTTPException
 from fastapi.staticfiles import StaticFiles
 
+from solar import ASTRONOMICAL_DARKNESS_DEG, solar_elevation
+
+NO_DARKNESS_MESSAGE = "No astronomical darkness is expected within the available forecast period for this location."
+
 FRONTEND_DIR = Path(__file__).resolve().parent / "frontend"
 
 app = FastAPI(title="StarGaze API")
@@ -104,15 +108,19 @@ def localize_times(times: list[str], tz: tzinfo) -> list[datetime]:
     return localized
 
 
+def utc_now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
 def next_night_window(entry: dict, lat: float, lng: float, now: datetime | None = None) -> dict | None:
-    """From an hourly forecast entry, pull the next contiguous block of night (is_day == 0)
-    hours starting from now, score each hour, and summarize the block. None if no night data.
+    """From an hourly forecast entry, pull the next contiguous block of astronomically dark hours
+    (Sun's center at or below -18°) starting from now, score each hour, and summarize the block.
+    None if no such hour remains in the forecast — twilight hours are never substituted.
 
     `now` is an aware datetime (defaults to the current time); it is compared as an absolute
     instant, so the server's own timezone never affects which hours are selected."""
     hourly = entry.get("hourly", {})
     times = hourly.get("time", [])
-    is_day = hourly.get("is_day", [])
     cloud = hourly.get("cloud_cover", [])
     precip = hourly.get("precipitation", [])
     wind = hourly.get("wind_speed_10m", [])
@@ -123,14 +131,22 @@ def next_night_window(entry: dict, lat: float, lng: float, now: datetime | None 
     tz, tz_name = location_timezone(entry)
     local_times = localize_times(times, tz)
     # Compare in UTC: aware datetimes sharing a tzinfo compare by wall clock, ignoring fold.
-    now_utc = (now or datetime.now(timezone.utc)).astimezone(timezone.utc).replace(second=0, microsecond=0)
+    now_utc = (now or utc_now()).astimezone(timezone.utc).replace(second=0, microsecond=0)
+
+    # Elevations are computed lazily: only from now until the end of the first dark block.
+    elevations: dict[int, float] = {}
+
+    def is_dark(idx: int) -> bool:
+        if idx not in elevations:
+            elevations[idx] = solar_elevation(lat, lng, local_times[idx])
+        return elevations[idx] <= ASTRONOMICAL_DARKNESS_DEG
 
     i = next((idx for idx, dt in enumerate(local_times) if dt.astimezone(timezone.utc) >= now_utc), len(times))
-    while i < len(times) and is_day[i] == 1:  # skip any remaining daylight hours
+    while i < len(times) and not is_dark(i):  # skip daylight and civil/nautical/astronomical twilight
         i += 1
 
     night_indices = []
-    while i < len(times) and is_day[i] == 0:
+    while i < len(times) and is_dark(i):
         night_indices.append(i)
         i += 1
 
@@ -146,6 +162,7 @@ def next_night_window(entry: dict, lat: float, lng: float, now: datetime | None 
             "time":            times[idx],  # location's local wall clock, "YYYY-MM-DDTHH:MM"
             "time_iso":        local_dt.isoformat(timespec="minutes"),  # same instant with UTC offset
             "tz_abbreviation": local_dt.tzname(),
+            "sun_elevation":   round(elevations[idx], 1),
             "cloud_cover":   c,
             "precipitation": p,
             "wind_speed":    w,
@@ -203,7 +220,7 @@ def get_best_spot(lat: float, lon: float, radius_km: float = 12) -> dict:
     url = (
         f"https://api.open-meteo.com/v1/forecast"
         f"?latitude={lat_str}&longitude={lng_str}"
-        f"&hourly=cloud_cover,precipitation,wind_speed_10m,relative_humidity_2m,is_day"
+        f"&hourly=cloud_cover,precipitation,wind_speed_10m,relative_humidity_2m"
         f"&timezone=auto&forecast_days=2"
     )
     try:
@@ -229,12 +246,26 @@ def get_best_spot(lat: float, lon: float, radius_km: float = 12) -> dict:
         })
 
     if not candidates:
-        raise HTTPException(status_code=502, detail="No night forecast data available for this area")
+        forecasts = [e for e in entries if e.get("hourly", {}).get("time")]
+        if not forecasts:
+            raise HTTPException(status_code=502, detail="No night forecast data available for this area")
+        # Forecast exists but never reaches astronomical darkness (e.g. high-latitude summer).
+        return {
+            "query_center":       {"lat": lat, "lng": lon},
+            "timezone":           location_timezone(forecasts[0])[1],
+            "darkness_available": False,
+            "message":            NO_DARKNESS_MESSAGE,
+            "best_spot":          None,
+            "candidates_checked": len(forecasts),
+            "radius_km":          radius_km,
+        }
 
     best = max(candidates, key=lambda c: c["avg_night_score"])
     return {
         "query_center":       {"lat": lat, "lng": lon},
         "timezone":           best["timezone"],
+        "darkness_available": True,
+        "message":            None,
         "best_spot":          best,
         "candidates_checked": len(candidates),
         "radius_km":          radius_km,
